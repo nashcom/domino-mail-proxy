@@ -1,0 +1,589 @@
+#/bin/bash
+
+############################################################################
+# Copyright Nash!Com, Daniel Nashed 2025 - APACHE 2.0 see LICENSE
+############################################################################
+
+
+DOMMAILPROXY_VERSION=0.8.0
+
+SCRIPT_NAME="$0"
+PARAM1="$1"
+PARAM2="$2"
+PARAM3="$3"
+
+
+usage ()
+{
+  echo
+  echo
+  echo Domino Mail Proxy $DOMMAILPROXY_VERSION
+  echo
+  echo "Usage: $(basename $SCRIPT_NAME) [Options]"
+  echo
+  echo "start        Start the container"
+  echo "stop         Stop the container"
+  echo "bash         Start a bash in the container with the standard 'nginx' user"
+  echo "bash root    Start a bash with root"
+  echo "rm           Remove the container (even when running)"
+  echo "update       Recreate the container from current image"
+  echo
+  echo "log          Show container log" 
+  echo "error        Show the NGINX server log using vi inside the container"
+  echo "cfg          Edit configuration"
+  echo "env          Edit environment"
+  echo "info/about   Show information about the configuration"
+  echo "reload       Reload NGINX config"
+  echo "version      Prints the version"
+  echo
+
+  return 0
+}
+
+
+log_space()
+{
+  echo
+  echo "$@"
+  echo
+}
+
+
+log_error()
+{
+  echo
+  echo "ERROR - $@"
+  echo
+}
+
+
+delim()
+{
+  echo  "------------------------------------------------------------"
+}
+
+
+header()
+{
+  echo
+  delim
+  echo "$@"
+  delim
+  echo
+}
+
+
+get_container_environment()
+{
+  # If specified use specified command. Else find out the platform.
+
+  if [ -n "$CONTAINER_CMD" ]; then
+    return 0
+  fi
+
+  if [ -n "$USE_DOCKER" ]; then
+    CONTAINER_CMD=docker
+    return 0
+  fi
+
+  if [ -x /usr/bin/podman ]; then
+    CONTAINER_CMD=podman
+    return 0
+  fi
+
+  if [ -n "$(which nerdctl 2> /dev/null)" ]; then
+    CONTAINER_CMD=nerdctl
+    return 0
+  fi
+
+  CONTAINER_CMD=docker
+
+  return 0
+}
+
+
+container_status()
+{
+  STATUS="$($CONTAINER_CMD inspect --format '{{ .State.Status }}' $CONTAINER_NAME 2>/dev/null)"
+}
+
+
+container_start()
+{
+  # Check if we already have this container in status exited
+  container_status
+
+  if [ -z "$STATUS" ]; then
+
+    echo "Creating Container: $CONTAINER_NAME"
+
+    if [ -z "$CONTAINER_VOLUMES" ]; then
+
+      if [ -n "$CFG_VOL" ]; then
+        CONTAINER_VOLUMES="-v $CFG_VOL:/nginx-cfg:Z"
+      fi
+
+      if [ -n "$LOG_VOL" ]; then
+        
+        if [ -z "$CONTAINER_VOLUMES" ]; then
+          CONTAINER_VOLUMES="-v $LOG_VOL:/nginx-log:Z"
+        else
+          CONTAINER_VOLUMES="$CONTAINER_VOLUMES -v $LOG_VOL:/nginx-log:Z"
+        fi
+
+      fi
+
+    fi
+
+    if [ "$CONTAINER_NETWORK_NAME" = "host" ]; then
+      CONTAINER_NETWORK="--network=host"
+      CONTAINER_PORTS=
+
+    elif [ -n "$CONTAINER_NETWORK_NAME" ]; then
+      CONTAINER_NETWORK="--network=$CONTAINER_NETWORK_NAME"
+
+    else
+      CONTAINER_NETWORK=
+    fi
+
+    if [ -n "$DOMMAILPROXY_ENV_FILE" ]; then
+      if [ -e "$DOMMAILPROXY_ENV_FILE" ]; then
+        CONTAINER_ENV_FILE_OPTION="--env-file $DOMMAILPROXY_ENV_FILE"
+      fi
+    fi
+
+    if [ -z "$CONTAINER_RESTART_POLICY" ]; then
+      CONTAINER_RESTART_POLICY=always
+    fi
+
+    if [ -n "$CONTAINER_RESTART_POLICY" ]; then
+      CONTAINER_RESTART_OPTIONS="--restart=$CONTAINER_RESTART_POLICY"
+    else
+      CONTAINER_RESTART_OPTIONS=
+    fi
+
+    $CONTAINER_CMD run -d --name "$CONTAINER_NAME" --hostname=$CONTAINER_HOSTNAME $CONTAINER_ENV_FILE_OPTION -e NGINX_PORT=$NGINX_PORT --cap-add=NET_BIND_SERVICE --stop-timeout 1 $CONTAINER_NETWORK $CONTAINER_PORTS $CONTAINER_RESTART_OPTIONS $CONTAINER_VOLUMES $CONTAINER_IMAGE
+
+  elif [ "$STATUS" = "exited" ] ; then 
+    echo "Starting existing container: $CONTAINER_NAME"
+    $CONTAINER_CMD start $CONTAINER_NAME
+  fi
+
+  return 0
+}
+
+
+container_stop()
+{
+  container_status
+
+  if [ -z "$STATUS" ]; then
+    return 0
+  fi
+
+  if [ "$STATUS" = "exited" ] ; then 
+    return 0
+  fi 
+
+  $CONTAINER_CMD stop $CONTAINER_NAME
+  return 0
+}
+
+
+container_rm()
+{
+  container_status
+
+  if [ -z "$STATUS" ]; then
+    return 0
+  fi
+
+  container_stop
+
+  $CONTAINER_CMD rm $CONTAINER_NAME
+  return 0
+}
+
+
+container_bash()
+{
+  container_status
+
+  if [ "$STATUS" != "running" ] ; then
+    echo "Container not running: $STATUS"
+    return 0
+  fi
+
+  if [ "$1" = "root" ]; then
+    $CONTAINER_CMD exec -it -u 0  $CONTAINER_NAME /bin/bash
+  else
+    $CONTAINER_CMD exec -it $CONTAINER_NAME /bin/bash
+  fi
+
+  return 0
+}
+
+
+container_vi()
+{
+
+  if [ -z "$1" ]; then
+    log_error "No file specified"
+    exit 1
+  fi
+
+  container_status
+
+  if [ "$STATUS" != "running" ] ; then
+    echo "Container not running: $STATUS"
+    return 0
+  fi
+
+  $CONTAINER_CMD exec -it $CONTAINER_NAME vi "$1"
+
+  return 0
+}
+
+
+
+container_logs()
+{
+  container_status
+
+  if [ -z "$STATUS" ]; then
+    return 0
+  fi
+
+  $CONTAINER_CMD logs $CONTAINER_NAME
+  return 0
+}
+
+
+set_owner()
+{
+  if [ -z "$1" ]; then
+    log_error "No file specified when setting owner"
+    return 0;
+  fi
+
+  if [ ! -e "$1" ]; then
+    log_error "File does not exist when setting owner: $1"
+    return 0;
+  fi
+  
+  if [ "$(id -u)" = "1000" ]; then
+    return 0
+  fi
+
+  if [ "$(id -u)" = "0" ]; then
+    chown 1000:1000 "$1"
+  else
+    sudo chown 1000:1000 "$1"
+  fi
+}
+
+
+nginx_reload()
+{
+  container_status
+
+  if [ "$STATUS" != "running" ]; then
+    echo "Container not running"
+    return 0
+  fi
+
+  $CONTAINER_CMD exec -it $CONTAINER_NAME nginx -s reload
+}
+
+
+InstallScript()
+{
+  local TARGET_FILE="/usr/local/bin/dommailproxyctl"
+  local INSTALL_FILE=
+  local SUDO=
+  local CURRENT_VERSION=
+
+  if [ -x "$TARGET_FILE" ]; then
+    CURRENT_VERSION=$($TARGET_FILE --version)
+
+    if [ "$DOMMAILPROXY_VERSION" = "$CURRENT_VERSION" ]; then
+      if [ "$1" != "-force" ]; then
+        log_space "Requested version $CURRENT_VERSION already installed"
+        exit 0
+      fi
+    fi
+  fi
+
+  if [ "$SCRIPT_NAME" = "bash" ]; then
+    if [ -n "$1" ]; then
+      INSTALL_FILE=$1
+    else
+      log_error "Installation failed - Running in bash pipe without script file specified"
+      exit 1
+    fi
+  else
+    INSTALL_FILE=$SCRIPT_NAME
+  fi
+
+  if [ ! -r "$INSTALL_FILE" ]; then
+    log_error "Installation failed - Cannot read file: $INSTALL_FILE"
+    exit 1
+  fi
+
+  header "Install Domino Mail Proxy Control"
+
+  if [ ! -w "/usr/local/bin" ]; then
+    log_error "Info: Need root permissions to install $TARGET_FILE (you might get prompted for sudo permissions)"
+    SUDO=sudo
+  fi
+
+  $SUDO cp "$INSTALL_FILE" "$TARGET_FILE"
+
+  if [ ! "$?" = "0" ]; then
+    log_error "Installation failed - Cannot copy [$INSTALL_FILE] to [$TARGET_FILE]"
+    exit 1
+  fi
+
+  $SUDO chmod +x "$TARGET_FILE"
+
+  if [ ! "$?" = "0" ]; then
+    log_error "Installation failed - Cannot change permissions for [$TARGET_FILE]"
+    exit 1
+  fi
+
+  if [ "$SCRIPT_NAME" = "bash" ]; then
+    remove_file "$INSTALL_FILE"
+  fi
+
+  if [ -z "$CURRENT_VERSION" ]; then
+    log_space "Successfully installed version $DOMMAILPROXY_VERSION to $TARGET_FILE"
+  else
+    log_space "Successfully updated from version $CURRENT_VERSION to $DOMMAILPROXY_VERSION"
+  fi
+
+  return 0
+}
+
+
+show_config()
+{
+  container_status
+
+  if [ "$STATUS" = "running" ] ; then
+    NGINX_VER=$($CONTAINER_CMD exec -it $CONTAINER_NAME nginx -v | cut -f2 -d':' | xargs)
+    LINUX_VER=$($CONTAINER_CMD exec -it $CONTAINER_NAME cat /etc/os-release | grep "PRETTY_NAME="| cut -d= -f2 | xargs)
+  fi
+
+  echo
+  delim
+  echo "Status        :  $STATUS"
+  echo "LINUX         :  $LINUX_VER"
+  echo "NGINX         :  $NGINX_VER"
+  echo "Version       :  $DOMMAILPROXY_VERSION"
+  echo
+  echo "Hostname      :  $CONTAINER_HOSTNAME"
+  echo "Container     :  $CONTAINER_NAME"
+  echo "Image         :  $CONTAINER_IMAGE"
+  echo
+  echo "Network       :  $CONTAINER_NETWORK_NAME"
+  echo "NGINX Port    :  $NGINX_PORT"
+  echo "Config Dir    :  $DOMMAILPROXY_DIR"
+
+  if [ "$CONTAINER_NETWORK_NAME" != "host" ]; then
+    echo "HTTP port     :  $CONTAINER_HTTPS_PORT"
+  fi
+
+  delim
+  echo
+}
+
+
+create_default_env_file()
+{
+  if [ ! -e "$DOMMAILPROXY_ENV_FILE" ]; then
+
+    echo  "MAIL_SERVER_NAME=" >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "AUTH_SERVER_NAME=pluto.csi-domino.com" >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "AUTH_SERVER_PORT=443" >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "AUTH_URL=/public/nginx-auth.nsf/nginx-auth" >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "SECRET_KEY=MySecretKey" >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "NGINX_LOG_LEVEL=warn" >> "$DOMMAILPROXY_ENV_FILE"
+    echo >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "SMTP_AUTH=login plain cram-md5" >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "SMTP_TLS_AUTH=login plain cram-md5" >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "POP3_TLS_AUTH=plain apop cram-md5" >> "$DOMMAILPROXY_ENV_FILE"
+    echo  "IMAP_TLS_AUTH=login plain cram-md5" >> "$DOMMAILPROXY_ENV_FILE"
+
+  fi
+}
+
+
+# --- Main ---
+
+if [ -z "$DOMMAILPROXY_CFG_DIR" ]; then
+
+  if [ -e .DominoMailProxy ]; then
+    DOMMAILPROXY_CFG_DIR=$(pwd)/.DominoMailProxy
+  else
+    DOMMAILPROXY_CFG_DIR=~/.DominoMailProxy
+  fi
+fi
+
+
+# Load config if present
+
+DOMMAILPROXY_CFG="$DOMMAILPROXY_CFG_DIR/dommailproxy.cfg"
+DOMMAILPROXY_ENV_FILE=$DOMMAILPROXY_CFG_DIR/.env
+
+if [ ! -e "$DOMMAILPROXY_CFG_DIR" ]; then
+  mkdir -p "$DOMMAILPROXY_CFG_DIR"
+fi
+
+if [ -e "$DOMMAILPROXY_CFG" ]; then
+  . "$DOMMAILPROXY_CFG"
+else
+
+  echo "# Domino Mail Proxy Server configuration" >> "$DOMMAILPROXY_CFG"
+  echo  "CONTAINER_NETWORK_NAME=host" >> "$DOMMAILPROXY_CFG"
+  echo  "CFG_VOL=./cfg" >> "$DOMMAILPROXY_CFG"
+  echo  "LOG_VOL=./log" >> "$DOMMAILPROXY_CFG"
+  echo  >> "$DOMMAILPROXY_CFG"
+
+fi
+
+
+# The Domino Server directory is used inside the container to store Domino Download script information.
+# User 1000:1000 on host should be the owner of the directory
+
+if [ -z "$DOMMAILPROXY_DIR" ]; then
+  DOMMAILPROXY_DIR=/local/dommailproxysrv
+fi
+
+
+# Ensure a Domino Download Server directory is pesent and has the right permissions
+
+if [ ! -e "$DOMMAILPROXY_DIR" ]; then
+  echo "Info: Creating directory: $DOMMAILPROXY_DIR"
+  mkdir -p "$DOMMAILPROXY_DIR"
+  set_owner "$DOMMAILPROXY_DIR"
+fi
+
+
+# Set defaults for all required parameters
+
+if [ -z "$CONTAINER_NAME" ]; then
+  CONTAINER_NAME=dommailproxy
+fi
+
+if [ -z "$CONTAINER_IMAGE" ]; then
+  CONTAINER_IMAGE=nashcom/domino-mail-proxy:latest
+fi
+
+if [ -z "$CONTAINER_NETWORK_NAME" ]; then
+  # Currently the default is empty
+  CONTAINER_NETWORK_NAME=
+fi
+
+if [ -z "$CONTAINER_HOSTNAME" ]; then
+  CONTAINER_HOSTNAME=$(hostname -f)
+fi
+
+if [ -z "$CONTAINER_HTTPS_PORT" ]; then
+  CONTAINER_HTTPS_PORT=443
+fi
+
+if [ -z "$SOFTWARE_DIR" ]; then
+  SOFTWARE_DIR=/local/software
+fi
+
+if [ -z "$EDIT_COMMAND" ]; then
+  EDIT_COMMAND="vi"
+fi
+
+if [ -z "$NGINX_PORT" ]; then
+  NGINX_PORT=8443
+fi
+
+
+get_container_environment
+
+
+case "$PARAM1" in
+	
+  start)
+    container_start 
+    ;;
+
+  stop)
+    container_stop
+    ;;
+
+  rm)
+    container_rm
+    ;;
+
+  update)
+    container_rm
+    container_start
+    ;;
+
+  bash)
+    container_bash "$PARAM2"
+    ;;
+
+  log|logs)
+    container_logs
+    ;;
+
+  restart)
+    container_stopremove
+    container_start 
+    ;;
+
+  reload)
+    nginx_reload
+    ;;
+
+  error)
+    container_vi "/nginx-log/error.log"
+    ;;
+
+  config|cfg)
+    $CONTAINER_SUDO $EDIT_COMMAND "$DOMMAILPROXY_CFG"
+    ;;
+
+  env)
+    create_default_env_file
+    $CONTAINER_SUDO $EDIT_COMMAND "$DOMMAILPROXY_ENV_FILE"
+    ;;
+
+  ver|version|--version)
+    echo $DOMMAILPROXY_VERSION
+    exit 0
+    ;;
+
+  install)
+    InstallScript "$PARAM2"
+    exit 0
+    ;;
+
+  info|about)
+    show_config
+    ;;
+
+  *)
+
+    if [ -z "$PARAM1" ]; then
+      usage 
+    else
+      echo
+      echo "Invalid command:" [$PARAM1]
+      usage 
+    fi
+    ;;
+
+esac
+
+echo 
+exit 0
+
