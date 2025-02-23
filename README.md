@@ -1,7 +1,6 @@
 # Domino Mail Proxy Server
 
 The Domino Mail Proxy Server provides dispatching and failover functionality for SMTP, POP3 and IMAP. 
-
 The container image is self contained. It just requires mounts a corporate certificate (or operates with it's own MicroCA).
 
 Options available
@@ -85,6 +84,7 @@ The managenment script automatically turns it into the right volume mounts.
 
 ### Configuration settings
 
+The following configuration is used to configure the container itself.
 
 | Setting            | Description                                                | Default                     |
 | :----------------- | :--------------------------------------------------------- | :-------------------------- |
@@ -95,7 +95,15 @@ The managenment script automatically turns it into the right volume mounts.
 | USE_DOCKER         | Override container environment to use Docker if also Podman is installed | Use Podman if installed |
 
 
-### Container environment settings  settings
+### Container environment settings
+
+The following settings are available to configure functionality of the NGINX Mail Proxy.
+Variables are added to an "environment" file and used at container run.
+
+The configuraiton of an NGINX server is generally configured via **/nginx-cfg/nginx.conf**.
+A NGINX configuration file itself can't use parameter variables.
+Therfore the container image uses a nginx.conf template configuration which is turned into a static **nginx.conf** file to launch NGINX.
+
 
 | Setting           | Description                                                | Possible values           |
 | :---------------- | :--------------------------------------------------------- | :------------------------ |
@@ -133,7 +141,7 @@ The root is generated for 10 years. Each certificate is valid for 365 days.
 
 The certificate of the server should be a corporate or official certifiate which needs to be added to the configuration directory.
 
-- custom_ey.pem
+- custom_key.pem
 - custom_cert.pem
 
 If not certificate is specified, a certificate vaild for 365 days is created on every server start.
