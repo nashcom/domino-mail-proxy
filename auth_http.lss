@@ -1,0 +1,205 @@
+
+' Simple NGINX mail http_auth implementation
+
+Option Declare
+
+Sub Initialize
+	
+	Dim session As New NotesSession
+	Dim db As NotesDatabase 
+	Dim WebDoc As NotesDocument
+	Dim doc As NotesDocument
+	
+	On Error Goto error_handler
+	
+	Set db = session.Currentdatabase
+	Set WebDoc = session.DocumentContext
+	
+	If ("GET" = WebDoc.REQUEST_METHOD(0)) Then
+		Call NGINX_Auth  (db, WebDoc)
+		Exit Sub
+	End If
+	
+	' Other requests are ignored
+	Exit Sub
+	
+error_handler: 
+	
+	LogError "NGINX Auth - Error: " + Error()
+	
+	Exit Sub
+	
+End Sub
+
+
+Sub NGINX_Auth (db As NotesDatabase, WebDoc As NotesDocument)
+	
+	Dim session As New notessession
+	Dim doc As New NotesDocument (db)
+	Dim PostedDate As New NotesDateTime("")
+	Dim NotesDir As NotesDirectory
+	Dim DirNav As NotesDirectoryNavigator
+	Dim value As Variant
+	Dim ret As Variant
+	
+	Dim szUsername As String
+	Dim szMailServer As String
+	Dim szPassword As String
+	Dim szPasswordHash As String
+	Dim szHostName As String
+	Dim szSMTPFullHostDomain As String
+	Dim szProtocol As String
+	Dim szServer As String
+	Dim szPort As String
+	
+	Dim UserLookupItems (1 To 2) As String
+	Dim ServerLookupItems (1 To 2) As String
+	
+	Dim bPasswordVerified As Boolean
+	
+	Call PostedDate.SetNow
+	Set Doc.PostedDate = PostedDate
+	
+	Call WebDoc.CopyAllItems (doc, True)
+	
+	bPasswordVerified = False
+	szServer = ""
+	szPort = ""
+	
+	doc.Form = "Request"
+	doc.remote_addr = WebDoc.remote_addr(0)
+	
+	szProtocol = doc.HTTP_AUTH_PROTOCOL(0)
+	szUsername = doc.HTTP_AUTH_USER(0)
+	szPassword = doc.HTTP_AUTH_PASS(0)
+	
+	' Replace password by len of password for logging
+	doc.HTTP_AUTH_PASS = Cstr(Len(szPassword))
+	
+	DebugMsg "Username: " + szUsername
+	
+	UserLookupItems(1)   =  "MailServer"
+	UserLookupItems(2)   =  "HTTPPassword"
+	
+	ServerLookupItems(1) =  "HTTP_HostName"
+	ServerLookupItems(2) =  "SMTPFullHostDomain"
+	
+	Set NotesDir = session.GetDirectory("")
+	Set DirNav = NotesDir.LookupNames ("$Users", szUsername, UserLookupItems, True)
+	
+	If  (DirNav.NameLocated  And DirNav.MatchLocated  ) Then
+		
+		Value = DirNav.GetFirstItemValue
+		szMailServer = Value(0)	
+		
+		Value = DirNav.GetNextItemValue
+		szPasswordHash = Value(0)	
+		
+		DebugMsg " MailServer: " + szMailServer
+		
+		bPasswordVerified = session.VerifyPassword (szPassword, szPasswordHash)
+		
+		If (bPasswordVerified) Then
+			DebugMsg "Password VERIFIED"
+		Else
+			DebugMsg "Password NOT VERIFIED"
+			doc.Status = "INVALIDPW"
+		End If
+		
+	Else
+		DebugMsg "User not found"
+		doc.Status = "NOTFOUND"
+		
+		Print "Auth-Status:Invalid login"
+		Goto Done
+	End If
+	
+	Set DirNav = NotesDir.LookupNames ("$Servers", szMailServer, ServerLookupItems, True)
+	
+	If  (DirNav.NameLocated  And DirNav.MatchLocated  ) Then
+		
+		Value = DirNav.GetFirstItemValue
+		szHostName = Value(0)	
+		
+		Value = DirNav.GetNextItemValue
+		szSMTPFullHostDomain = Value(0)	
+		
+		DebugMsg "HostName: " + szHostName
+		DebugMsg "SMTPFullHostDomain: " + szSMTPFullHostDomain
+		
+		' ---> your mapping logic goes here <---
+
+		szServer = "127.0.0.1"
+		
+	Else
+		DebugMsg "Server not found"
+		Print "Auth-Status:Invalid login"
+		Goto Done
+	End If
+	
+	If (szProtocol ="smtp") Then
+		szPort = "25"
+		
+	Elseif (szProtocol ="imap") Then
+		szPort = "143"
+		
+	Elseif (szProtocol ="pop3") Then
+		szPort = "110"
+		
+	Else		
+		doc.Status = "INVALIDPORT"
+		Print "Auth-Status:Invalid login"
+		Goto Done
+	End If
+	
+	If (bPasswordVerified) Then
+		Print "Auth-Status:OK"
+		doc.Status = "OK"
+		
+	Else
+		Print "Auth-Status:Invalid login"
+		Print "Auth-Wait: 4"
+		Goto Done
+	End If
+	
+	If ("" = szServer) Then
+		DebugMsg "No server defined"
+		Print "Auth-Status:Invalid login"
+		Goto Done
+	End If
+	
+	doc.AuthServer = szServer
+	doc.AuthPort = szPort
+	
+	Print "Auth-Server: " + szServer
+	Print "Auth-Port: " + szPort
+	
+Done:
+	
+	Call doc.Save (True, False)
+	
+	If (bPasswordVerified) Then
+		Print "OK"
+	Else
+		Print "Invalid login"
+	End If	
+	
+	Exit Sub
+	
+error_handler: 
+	
+	LogError "KeyVault - Error: " + Error()
+	
+	Exit Sub
+	
+End Sub
+
+
+Sub LogError (ErrorStr As String)
+	Print ("Error: " + ErrorStr)	
+End Sub
+
+Sub DebugMsg (szMessage As String)
+	Messagebox "nginx-auth - " + szMessage
+End Sub
+

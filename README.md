@@ -18,6 +18,35 @@ See [Configuring NGINX as a Mail Proxy Server](https://docs.nginx.com/nginx/admi
 [Module ngx_mail_ssl_module](http://nginx.org/en/docs/mail/ngx_mail_ssl_module.html) provides detailed information about configuration options.
 
 
+
+## Mapping backend resources via auth_http
+
+The NGINX Mail Proxy maps backend resources and authenticates users via HTTPS request.
+NGINX sends a request information about the request to a server, which decides if the connection is OK and also provides the mapping.
+
+The mapping is usually performed against a Domino server.
+Depending on the size of the environment a simple agent could perform the lookup.
+For larger environments a DSAPI filter will make more sense.
+
+This project will provide a lookup solution in the next step.
+
+
+### Sample result expected for a successful reply
+
+```
+HTTP/1.0 200 OK
+Auth-Status: OK
+Auth-Server: 192.168.1.123
+Auth-Port: 993
+```
+
+### Sample Lotus Script Agent to implment auth_http
+
+The project contains a simple example agent to implement the functionality.
+Check  **auth_http.lss** for details.
+
+
+
 ## Technology used
 
 The server is based on an [Alpine](https://alpinelinux.org/) container running [NGINX](https://nginx.org/).
